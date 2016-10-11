@@ -1,8 +1,6 @@
 import torch._C as _C
 from collections import OrderedDict
 
-from .functions import *
-
 
 class Variable(_C._VariableBase):
 
@@ -568,5 +566,7 @@ class Variable(_C._VariableBase):
 
 
 from .engine import ImperativeEngine
+from .functions import *
+
 Variable._execution_engine = ImperativeEngine()
 

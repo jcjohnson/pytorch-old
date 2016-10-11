@@ -1,6 +1,9 @@
+import torch
 import torch._C as _C
+import collections
 from collections import OrderedDict
 from itertools import chain
+from .variable import Variable
 
 
 class Function(_C._FunctionBase):
@@ -42,4 +45,64 @@ class InplaceFunction(Function):
     def __init__(self, inplace=False):
         super(InplaceFunction, self).__init__()
         self.inplace = inplace
+
+
+def _iter_filter(condition):
+    def _iter(self, obj):
+        if condition(obj):
+            yield obj
+        elif obj is None:
+            return
+        elif isinstance(obj, collections.Mapping):
+            for o in obj.values():
+                for var in _iter(self, o):
+                    yield var
+        elif isinstance(obj, collections.Iterable) and not isinstance(obj, (str, bytes)):
+            for o in obj:
+                for var in _iter(self, o):
+                    yield var
+        else:
+            raise ValueError("NestedInputFunction doesn't know how to process "
+                "an input object of type " + torch.typename(obj))
+    return _iter
+
+
+class NestedInputFunction(Function):
+
+    _iter_variables = _iter_filter(lambda o: isinstance(o, Variable))
+    _iter_tensors = _iter_filter(torch.is_tensor)
+    _iter_None_tensors = _iter_filter(lambda o: o is None or torch.is_tensor(o))
+
+    def _do_forward(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        flat_args = tuple(self._iter_variables((args, kwargs)))
+        return super(NestedInputFunction, self).__call__(*flat_args)
+
+    def backward(self, *gradients):
+        result = self.backward_extended(*gradients)
+        return tuple(self._iter_None_tensors(result))
+
+    __call__ = _do_forward
+
+    def forward(self, *args):
+        result = self.forward_extended(*self.args, **self.kwargs)
+        del self.args
+        del self.kwargs
+        return result
+
+    def save_for_backward(self, *args, **kwargs):
+        self.to_save = tuple(self._iter_tensors((args, kwargs)))
+
+    def mark_dirty(self, *args, **kwargs):
+        self.dirty_tensors = tuple(self._iter_tensors((args, kwargs)))
+
+    def mark_non_differentiable(self, *args, **kwargs):
+        self.non_differentiable = tuple(self._iter_tensors((args, kwargs)))
+
+    def forward_extended(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def backward_extended(self, *gradients):
+        raise NotImplementedError
 
