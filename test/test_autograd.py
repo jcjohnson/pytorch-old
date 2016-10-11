@@ -1,9 +1,11 @@
 import math
 import unittest
 from copy import deepcopy
+from collections import OrderedDict
 
 from common import make_jacobian, TestCase, iter_tensors, get_numerical_jacobian
 from torch.autograd.functions import *
+from torch.autograd import Variable
 
 PRECISION = 1e-4
 
@@ -121,9 +123,13 @@ class TestAutograd(TestCase):
         def error():
             raise RuntimeError
         # Make sure backward isn't called on these
+        a.backward_hooks = OrderedDict()
+        x.backward_hooks = OrderedDict()
+        y.backward_hooks = OrderedDict()
         a.backward_hooks['test'] = error
         x.backward_hooks['test'] = error
         y.backward_hooks['test'] = error
+        b.backward(torch.ones(5, 5))
 
     def test_inplace(self):
         x = Variable(torch.ones(5, 5), requires_grad=True)
@@ -132,9 +138,9 @@ class TestAutograd(TestCase):
         z = x * y
         q = z + y
         w = z * y
-        z.dirty = True
+        z.add_(2)
         # Add doesn't need it's inputs to do backward, so it shouldn't raise
-        q.backward(torch.ones(5, 5))
+        q.backward(torch.ones(5, 5), retain_variables=True)
         # Mul saves both inputs in forward, so it should raise
         self.assertRaises(RuntimeError, lambda: w.backward(torch.ones(5, 5)))
 
@@ -154,9 +160,9 @@ class TestAutograd(TestCase):
         z = m + y / 8
         q = z * y
         r = z + y
-        prev_version = z._version[0]
+        prev_version = z._version
         w = z.exp_()
-        self.assertNotEqual(z._version[0], prev_version)
+        self.assertNotEqual(z._version, prev_version)
         r.backward(torch.ones(5, 5), retain_variables=True)
         self.assertEqual(x.grad, torch.ones(5, 5) / 2)
         w.backward(torch.ones(5, 5), retain_variables=True)
@@ -177,21 +183,21 @@ class TestAutograd(TestCase):
 
     def test_shared_storage(self):
         x = Variable(torch.ones(5, 5))
-        x_version = x._version[0]
+        x_version = x._version
         y = x.t()
         z = x[1]
-        self.assertEqual(x._version[0], x_version)
-        z_version = z._version[0]
+        self.assertEqual(x._version, x_version)
+        z_version = z._version
         y.add_(2)
-        self.assertNotEqual(x._version[0], x_version)
-        self.assertNotEqual(z._version[0], z_version)
+        self.assertNotEqual(x._version, x_version)
+        self.assertNotEqual(z._version, z_version)
 
     def _test_setitem(self, index):
         x = Variable(torch.ones(5, 5), requires_grad=True)
         y = x + 2
-        y_version = y._version[0]
+        y_version = y._version
         y[index] = 2
-        self.assertNotEqual(y._version[0], y_version)
+        self.assertNotEqual(y._version, y_version)
         y.backward(torch.ones(5, 5))
         expected_grad = torch.ones(5, 5)
         if isinstance(index, Variable):
@@ -225,6 +231,48 @@ class TestAutograd(TestCase):
                 x2 = x2.cuda(1)
                 self.assertIs(type(x2.data), torch.cuda.FloatTensor)
                 self.assertIs(x2.get_device(), 1)
+
+    def test_backward_copy(self):
+      # This tests checks backward engine for a very subtle bug that appreared
+      # in one of the initial versions of autograd. Gradients tensors were
+      # simply stored in lists while the function waited for all its gradients
+      # to be computed. However, sometimes an output was used multiple times,
+      # so the radients needed to be summed. Engine used to keep a need_copy
+      # set of tensors that will need a clone upon next addition and removed
+      # them from the set as soon as the clone was performed. However, this
+      # could lead to incorrect results if the same gradient tensor was
+      # buffered in three places in the graph:
+      # 1. When accumulating gradients in one of these places it was cloned
+      #    and removed from need_copy set.
+      # 2. When accumulating in second place, it wasn't in the need_copy set,
+      #    so the gradients were simply accumulated in-place (which already
+      #    modified the grad in 3rd place)
+      # 3. When accumulating in the third place, it wasn't in the need_copy set
+      #    as well, so the incomming gradient was summed in-place, yielding
+      #    incorrect results in all functions, except the first one.
+      x = Variable(torch.ones(5, 5), requires_grad=True)
+      y = Variable(torch.ones(5, 5), requires_grad=True)
+      # Simulate that we're in the middle of the graph
+      a = x + 2
+      b = y + 2
+      c = x + 2
+      # This op will just return grad_output two times in backward
+      add1 = a + b
+      add2 = add1 + c
+      # Simulate a long branch, so grad_output will get buffered.
+      for i in range(4):
+        a = a * 2
+        b = b * 2
+        c = c * 2
+      branch = a + b + c
+      out = add2 + branch
+      # expected gradients are:
+      # for x: 34 (16 from final a, 16 from final c, 2 from add2)
+      # for y: 17 (16 from final b, 1 from add2)
+      grad_output = torch.ones(5, 5)
+      out.backward(grad_output)
+      self.assertEqual(x.grad, torch.ones(5, 5) * 34)
+      self.assertEqual(y.grad, torch.ones(5, 5) * 17)
 
 
 def index_variable(num_indices, max_indices):

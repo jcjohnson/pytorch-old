@@ -149,6 +149,10 @@ main_sources = [
     "torch/csrc/utils.cpp",
     "torch/csrc/allocators.cpp",
     "torch/csrc/serialization.cpp",
+    "torch/csrc/autograd/init.cpp",
+    "torch/csrc/autograd/variable.cpp",
+    "torch/csrc/autograd/function.cpp",
+    "torch/csrc/autograd/engine.cpp",
 ]
 
 try:

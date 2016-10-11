@@ -61,7 +61,7 @@ std::string _THPUtils_typename(PyObject *object)
   std::string result;
   if (type_name.find("Storage") != std::string::npos ||
           type_name.find("Tensor") != std::string::npos) {
-    PyObject *module_name = PyObject_GetAttrString(object, "__module__");
+    THPObjectPtr module_name = PyObject_GetAttrString(object, "__module__");
 #if PY_MAJOR_VERSION == 2
     if (module_name && PyString_Check(module_name)) {
       result = PyString_AS_STRING(module_name);
