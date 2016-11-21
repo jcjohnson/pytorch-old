@@ -11,7 +11,7 @@ def parallel_apply(modules, inputs):
     assert len(modules) == len(inputs)
     # Fast track
     if len(modules) == 1:
-        return modules[0](inputs[0])
+        return (modules[0](inputs[0]),)
 
     lock = threading.Lock()
     results = {}
